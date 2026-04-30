@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+shorts/
+temp_*.mp4
+*.mp4
+*.mp3
