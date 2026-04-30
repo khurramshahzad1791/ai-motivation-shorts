@@ -5,6 +5,9 @@ import os
 import time
 from datetime import datetime
 from moviepy.editor import *
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+import io
 import google.generativeai as genai
 
 # Page config - MUST be first Streamlit command
@@ -62,7 +65,7 @@ st.markdown("""
 # Title
 st.title("🔥 AI Shorts Forge")
 st.markdown('<span class="ai-badge">⚡ Powered by Gemini AI</span>', unsafe_allow_html=True)
-st.caption("Generate 10 UNIQUE motivational shorts • Fresh content every batch • USA-optimized")
+st.caption("Generate motivational shorts • Fresh content every batch • USA-optimized")
 
 # Session state
 if 'shorts_generated' not in st.session_state:
@@ -89,8 +92,6 @@ FOOTAGE_URLS = [
     "https://assets.mixkit.co/videos/preview/mixkit-forest-trees-3297-large.mp4",
     "https://assets.mixkit.co/videos/preview/mixkit-young-woman-running-in-nature-3280-large.mp4",
     "https://assets.mixkit.co/videos/preview/mixkit-man-reaching-mountain-peak-4056-large.mp4",
-    "https://assets.mixkit.co/videos/preview/mixkit-woman-meditating-on-the-beach-3298-large.mp4",
-    "https://assets.mixkit.co/videos/preview/mixkit-working-from-home-at-night-3809-large.mp4",
 ]
 
 # USA peak upload times (Pakistan Time)
@@ -178,7 +179,7 @@ def generate_ai_seo(title, hook, keywords, short_num):
         schedule = UPLOAD_SCHEDULE[short_num % len(UPLOAD_SCHEDULE)]
         return {
             "title": f"{title} 🔥 | Motivational Short"[:70],
-            "description": f"{hook}\n\n💪 {title}\n\nSubscribe for daily motivation.\n\n#motivation #{keywords.replace(' ', ' #')}",
+            "description": f"{hook}\n\n💪 {title}\n\nSubscribe for daily motivation.\n\n#motivation",
             "hashtags": f"#motivation #{keywords.replace(' ', ' #')}",
             "best_time_pkt": schedule['pkt'],
             "best_time_us": schedule['us'],
@@ -236,12 +237,41 @@ HASHTAGS: (10-12 hashtags)"""
             "expected_views": schedule['views']
         }
 
-def create_motivational_short(title, hook, script, short_num):
-    """Create the video"""
+def create_text_image(text, size, color, bg_color=(0,0,0)):
+    """Create text overlay using PIL (no ImageMagick needed)"""
+    try:
+        img = Image.new('RGBA', (1080, 200), bg_color + (0,))  # Transparent background
+        draw = ImageDraw.Draw(img)
+        
+        # Try to use a default font
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Calculate text position
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        x = (1080 - text_width) // 2
+        y = (200 - text_height) // 2
+        
+        draw.text((x, y), text, fill=color, font=font)
+        
+        # Convert to numpy array for MoviePy
+        img_array = np.array(img)
+        return img_array
+    except:
+        return None
+
+def create_motivational_short(title, hook, short_num, test_mode=False):
+    """Create a single motivational short video"""
     
     os.makedirs("shorts", exist_ok=True)
     output_path = f"shorts/short_{short_num:03d}.mp4"
     temp_video = f"temp_{short_num}.mp4"
+    
+    duration = 30 if test_mode else 55  # Shorter for testing
     
     try:
         footage_url = random.choice(FOOTAGE_URLS)
@@ -262,50 +292,91 @@ def create_motivational_short(title, hook, script, short_num):
                 clip = clip.resize(width=1080)
                 clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=1080, height=1920)
             
-            duration = min(58, clip.duration)
-            clip = clip.subclip(0, duration)
+            clip = clip.subclip(0, min(duration, clip.duration))
         else:
-            clip = ColorClip(size=(1080, 1920), color=(0, 0, 20), duration=55)
+            clip = ColorClip(size=(1080, 1920), color=(0, 0, 20), duration=duration)
     except:
-        clip = ColorClip(size=(1080, 1920), color=(0, 0, 20), duration=55)
+        clip = ColorClip(size=(1080, 1920), color=(0, 0, 20), duration=duration)
     
-    # Add text overlays
-    title_clip = TextClip(
-        title,
-        fontsize=60,
-        color='white',
-        font='Arial-Bold',
-        stroke_color='black',
-        stroke_width=3,
-        size=(1000, None),
-        method='caption'
-    ).set_position(('center', 250)).set_duration(clip.duration)
+    # Create text clips using CompositeVideoClip with PIL images
+    # For simplicity, we'll use a cleaner approach - just background with text
     
-    hook_clip = TextClip(
-        hook,
-        fontsize=42,
-        color='#ff4b4b',
-        font='Arial-Bold',
-        stroke_color='black',
-        stroke_width=2,
-        size=(1000, None),
-        method='caption'
-    ).set_position(('center', 480)).set_duration(clip.duration)
+    # Create text as image clips to avoid ImageMagick
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        
+        # Create title image
+        title_img = Image.new('RGBA', (1080, 300), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(title_img)
+        font_size = 60
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Draw title text
+        bbox = draw.textbbox((0, 0), title, font=font)
+        text_width = bbox[2] - bbox[0]
+        x = (1080 - text_width) // 2
+        draw.text((x, 100), title, fill=(255, 255, 255), font=font)
+        
+        # Convert to clip
+        title_array = np.array(title_img)
+        title_clip = ImageClip(title_array, transparent=True, duration=duration).set_position(('center', 200))
+        
+        # Create hook image
+        hook_img = Image.new('RGBA', (1080, 200), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(hook_img)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 42)
+        except:
+            font = ImageFont.load_default()
+        
+        bbox = draw.textbbox((0, 0), hook, font=font)
+        text_width = bbox[2] - bbox[0]
+        x = (1080 - text_width) // 2
+        draw.text((x, 50), hook, fill=(255, 75, 75), font=font)
+        
+        hook_array = np.array(hook_img)
+        hook_clip = ImageClip(hook_array, transparent=True, duration=duration).set_position(('center', 450))
+        
+        # Create CTA image
+        cta_img = Image.new('RGBA', (1080, 150), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(cta_img)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 38)
+        except:
+            font = ImageFont.load_default()
+        
+        cta_text = "Subscribe 🔔 Daily Motivation"
+        bbox = draw.textbbox((0, 0), cta_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        x = (1080 - text_width) // 2
+        draw.text((x, 50), cta_text, fill=(255, 255, 255), font=font)
+        
+        cta_array = np.array(cta_img)
+        cta_clip = ImageClip(cta_array, transparent=True, duration=duration).set_position(('center', 1650))
+        
+        # Combine all clips
+        final = CompositeVideoClip([clip, title_clip, hook_clip, cta_clip])
+        
+    except Exception as e:
+        # Ultra simple fallback: just the background
+        final = clip
     
-    cta_clip = TextClip(
-        "Subscribe 🔔 Daily Motivation",
-        fontsize=38,
-        color='white',
-        font='Arial-Bold',
-        stroke_color='black',
-        stroke_width=2,
-        size=(1000, None),
-        method='caption'
-    ).set_position(('center', 1700)).set_duration(clip.duration)
+    # Export video
+    final.write_videofile(
+        output_path,
+        fps=24,
+        codec='libx264',
+        threads=2,
+        preset='fast',
+        bitrate='1500k',
+        logger=None,
+        verbose=False
+    )
     
-    final = CompositeVideoClip([clip, title_clip, hook_clip, cta_clip])
-    final.write_videofile(output_path, fps=24, codec='libx264', audio_codec='aac', threads=2, preset='fast', bitrate='1500k', logger=None, verbose=False)
-    
+    # Cleanup
     if os.path.exists(temp_video):
         os.remove(temp_video)
     
@@ -314,18 +385,27 @@ def create_motivational_short(title, hook, script, short_num):
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
-    num_shorts = st.slider("Number of Shorts", 5, 10, 10)
+    
+    # Test mode toggle
+    test_mode = st.checkbox("🧪 Test Mode (1 short only)", value=False)
+    
+    if not test_mode:
+        num_shorts = st.slider("Number of Shorts", 5, 10, 10)
+    else:
+        num_shorts = 1
+        st.info("Test mode: Only 1 short will be generated (faster)")
     
     st.divider()
     
     if st.session_state.api_available:
         st.success("✅ Gemini AI Connected")
     else:
-        st.warning("⚠️ Add Gemini API Key")
+        st.warning("⚠️ Add Gemini API Key to Secrets")
+        st.caption("Get key from aistudio.google.com")
     
     st.divider()
     st.header("🌍 Upload Times (PKT)")
-    for s in UPLOAD_SCHEDULE[:5]:
+    for s in UPLOAD_SCHEDULE[:3]:
         st.markdown(f"**{s['pkt']}** → {s['us']}")
     
     st.divider()
@@ -335,8 +415,9 @@ with st.sidebar:
 if not st.session_state.shorts_generated:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if st.button("🔥 GENERATE SHORTS", type="primary"):
-            with st.spinner("Creating your shorts... 3-4 minutes"):
+        btn_label = "🧪 TEST GENERATE (1 SHORT)" if test_mode else "🔥 GENERATE SHORTS"
+        if st.button(btn_label, type="primary"):
+            with st.spinner("Creating your shorts... 1-2 minutes"):
                 
                 if os.path.exists("shorts"):
                     import shutil
@@ -351,9 +432,8 @@ if not st.session_state.shorts_generated:
                     status_text.text(f"Generating Short {i+1}/{num_shorts}...")
                     
                     topic = generate_ai_topic()
-                    script = generate_ai_script(topic['title'], topic['hook'])
                     seo = generate_ai_seo(topic['title'], topic['hook'], topic['keywords'], i)
-                    video_path = create_motivational_short(topic['title'], topic['hook'], script, i+1)
+                    video_path = create_motivational_short(topic['title'], topic['hook'], i+1, test_mode)
                     
                     with open(video_path, 'rb') as f:
                         video_bytes = f.read()
@@ -375,16 +455,16 @@ if not st.session_state.shorts_generated:
 
 # Display results
 if st.session_state.shorts_generated:
-    st.success(f"✅ {len(st.session_state.shorts_list)} shorts ready!")
+    st.success(f"✅ {len(st.session_state.shorts_list)} short(s) ready!")
     
     for short in st.session_state.shorts_list:
-        with st.expander(f"🎬 Short #{short['num']}: {short['topic']['title'][:50]}...", expanded=False):
+        with st.expander(f"🎬 Short #{short['num']}: {short['topic']['title'][:50]}...", expanded=True):
             st.video(short['video_bytes'])
             
             st.download_button(
-                label=f"📥 Download",
+                label=f"📥 Download Short #{short['num']}",
                 data=short['video_bytes'],
-                file_name=f"short_{short['num']:03d}.mp4",
+                file_name=f"motivation_short_{short['num']:03d}.mp4",
                 mime="video/mp4",
                 key=f"download_{short['num']}"
             )
@@ -392,16 +472,16 @@ if st.session_state.shorts_generated:
             st.markdown("---")
             st.markdown("### 📋 Copy-Paste SEO")
             
-            st.markdown("**Title:**")
+            st.markdown("**🎯 Title:**")
             st.code(short['seo']['title'], language='text')
             
-            st.markdown("**Description:**")
+            st.markdown("**📝 Description:**")
             st.code(short['seo']['description'], language='text')
             
-            st.markdown("**Hashtags:**")
+            st.markdown("**#️⃣ Hashtags:**")
             st.code(short['seo']['hashtags'], language='text')
             
-            st.info(f"⏰ Upload at: {short['seo']['best_time_pkt']} PKT ({short['seo']['best_time_us']})")
+            st.info(f"⏰ Best upload time: {short['seo']['best_time_pkt']} PKT ({short['seo']['best_time_us']})")
     
     st.divider()
     if st.button("🔄 GENERATE NEW BATCH"):
@@ -409,5 +489,17 @@ if st.session_state.shorts_generated:
         st.session_state.shorts_list = []
         st.rerun()
 
+# Footer
 st.divider()
-st.markdown("Made with 🔥 | Get Gemini API key from [aistudio.google.com](https://aistudio.google.com/)")
+st.markdown("""
+---
+### 🚀 Quick Start
+
+1. **Test Mode** (checkbox in sidebar) - generates 1 short in 1-2 minutes
+2. **Full Mode** - generates 10 shorts in 3-4 minutes
+3. **Download** each video to your phone
+4. **Copy SEO** (title, description, hashtags)
+5. **Upload to YouTube Shorts** at suggested Pakistan times
+
+**Get Gemini API key:** [aistudio.google.com](https://aistudio.google.com/)
+""")
